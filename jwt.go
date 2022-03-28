@@ -39,6 +39,11 @@ type Config struct {
 	Aud           string
 	OpaHeaders    map[string]string
 	JwtHeaders    map[string]string
+
+	ForwardAuthErrorHeader string
+	EnableMagicToken   bool
+	MagicToken         string
+	MagicTokenForwardAuth string
 }
 
 // CreateConfig creates a new OPA Config
@@ -60,6 +65,11 @@ type JwtPlugin struct {
 	aud           string
 	opaHeaders    map[string]string
 	jwtHeaders    map[string]string
+
+	forwardAuthErrorHeader string
+	enableMagicToken       bool
+	magicToken             string
+	magicTokenForwardAuth  string
 }
 
 // LogEvent contains a single log entry
@@ -163,6 +173,11 @@ func New(_ context.Context, next http.Handler, config *Config, _ string) (http.H
 		keys:          make(map[string]interface{}),
 		jwtHeaders:    config.JwtHeaders,
 		opaHeaders:    config.OpaHeaders,
+
+		enableMagicToken: config.EnableMagicToken,
+		magicToken: config.MagicToken,
+		magicTokenForwardAuth: config.MagicTokenForwardAuth,
+		forwardAuthErrorHeader: config.ForwardAuthErrorHeader,
 	}
 	if err := jwtPlugin.ParseKeys(config.Keys); err != nil {
 		return nil, err
@@ -305,8 +320,25 @@ func (jwtPlugin *JwtPlugin) FetchKeys() {
 }
 
 func (jwtPlugin *JwtPlugin) ServeHTTP(rw http.ResponseWriter, request *http.Request) {
+	// if magic token mode is enable, which is for testing tools to bypass auth with a fake user
+	// then skip the auth check stage and forward on a mocked token
+	if jwtPlugin.enableMagicToken {
+		// check if magic token set
+		token := request.Header.Get("Authorization")
+		token = strings.TrimSpace(token)
+		token = strings.Replace(token, "Bearer ", "", 1)
+		if token == jwtPlugin.magicToken {
+			// remove Authorization header from original request
+			request.Header.Del(jwtPlugin.forwardAuthErrorHeader)
+			request.Header.Set("Authorization", jwtPlugin.magicTokenForwardAuth)
+
+			jwtPlugin.next.ServeHTTP(rw, request)
+			return
+		}
+	}
+
 	if err := jwtPlugin.CheckToken(request); err != nil {
-		http.Error(rw, err.Error(), http.StatusForbidden)
+		jwtPlugin.ForwardError(rw, "Unauthorized", http.StatusUnauthorized, request)
 		return
 	}
 	jwtPlugin.next.ServeHTTP(rw, request)
@@ -511,6 +543,13 @@ func (jwtPlugin *JwtPlugin) CheckOpa(request *http.Request, token *JWT) error {
 		}
 	}
 	return nil
+}
+
+func (jwtPlugin *JwtPlugin) ForwardError(rw http.ResponseWriter, msg string, statusCode int, origReq *http.Request) {
+	rw.Header().Set(jwtPlugin.forwardAuthErrorHeader, msg)
+	origReq.Header.Set(jwtPlugin.forwardAuthErrorHeader, msg)
+	rw.WriteHeader(statusCode)
+	jwtPlugin.next.ServeHTTP(rw, origReq)
 }
 
 func toOPAPayload(request *http.Request) (*Payload, error) {
