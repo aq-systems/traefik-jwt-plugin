@@ -338,7 +338,7 @@ func (jwtPlugin *JwtPlugin) ServeHTTP(rw http.ResponseWriter, request *http.Requ
 	}
 
 	if err := jwtPlugin.CheckToken(request); err != nil {
-		jwtPlugin.ForwardError(rw, "Unauthorized", http.StatusUnauthorized, request)
+		jwtPlugin.ForwardError(rw, err.Error(), http.StatusUnauthorized, request)
 		return
 	}
 	jwtPlugin.next.ServeHTTP(rw, request)
