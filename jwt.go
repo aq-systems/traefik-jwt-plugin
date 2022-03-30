@@ -353,8 +353,9 @@ func (jwtPlugin *JwtPlugin) ServeHTTP(rw http.ResponseWriter, request *http.Requ
 	}
 
 	if err := jwtPlugin.CheckToken(request); err != nil {
-		jwtPlugin.log("ERR", err.Error())
-		jwtPlugin.ForwardError(rw, err.Error(), http.StatusUnauthorized, request)
+		errMsg := fmt.Sprintf("token validation failed: %s", err.Error())
+		jwtPlugin.log("ERR", errMsg)
+		jwtPlugin.ForwardError(rw, errMsg, http.StatusUnauthorized, request)
 		jwtPlugin.log("ServeHTTP took %s", time.Since(start).String())
 		return
 	}
