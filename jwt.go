@@ -40,10 +40,12 @@ type Config struct {
 	OpaHeaders    map[string]string
 	JwtHeaders    map[string]string
 
+	ForwardAuthHeader      string
 	ForwardAuthErrorHeader string
-	EnableMagicToken   bool
-	MagicToken         string
-	MagicTokenForwardAuth string
+	EnableMagicToken       bool
+	MagicToken             string
+	MagicTokenForwardAuth  string
+	Logging                bool
 }
 
 // CreateConfig creates a new OPA Config
@@ -66,10 +68,12 @@ type JwtPlugin struct {
 	opaHeaders    map[string]string
 	jwtHeaders    map[string]string
 
+	forwardAuthHeader      string
 	forwardAuthErrorHeader string
 	enableMagicToken       bool
 	magicToken             string
 	magicTokenForwardAuth  string
+	logging                bool
 }
 
 // LogEvent contains a single log entry
@@ -177,12 +181,16 @@ func New(_ context.Context, next http.Handler, config *Config, _ string) (http.H
 		enableMagicToken: config.EnableMagicToken,
 		magicToken: config.MagicToken,
 		magicTokenForwardAuth: config.MagicTokenForwardAuth,
+		forwardAuthHeader: config.ForwardAuthHeader,
 		forwardAuthErrorHeader: config.ForwardAuthErrorHeader,
+		logging: config.Logging,
 	}
 	if err := jwtPlugin.ParseKeys(config.Keys); err != nil {
+		jwtPlugin.log("ERR failed to parse keys", err.Error())
 		return nil, err
 	}
 	go jwtPlugin.BackgroundRefresh()
+	jwtPlugin.log("starting with the config", jwtPlugin)
 	return jwtPlugin, nil
 }
 
@@ -225,21 +233,22 @@ func (jwtPlugin *JwtPlugin) ParseKeys(certificates []string) error {
 }
 
 func (jwtPlugin *JwtPlugin) FetchKeys() {
+	jwtPlugin.log("fetching keys from the jwk endpoints", jwtPlugin.jwkEndpoints)
 	for _, u := range jwtPlugin.jwkEndpoints {
 		response, err := http.Get(u.String())
 		if err != nil {
-			// TODO: log warning
+			jwtPlugin.log("ERR fetching jwks", err.Error())
 			continue
 		}
 		body, err := ioutil.ReadAll(response.Body)
 		if err != nil {
-			// TODO: log warning
+			jwtPlugin.log("ERR reading jwks", err.Error())
 			continue
 		}
 		var jwksKeys Keys
 		err = json.Unmarshal(body, &jwksKeys)
 		if err != nil {
-			// TODO: log warning
+			jwtPlugin.log("ERR unmarshalling jwks", err.Error())
 			continue
 		}
 		for _, key := range jwksKeys.Keys {
@@ -317,32 +326,41 @@ func (jwtPlugin *JwtPlugin) FetchKeys() {
 			}
 		}
 	}
+	jwtPlugin.log("fetching keys finished. Key set is now:", jwtPlugin.keys)
 }
 
 func (jwtPlugin *JwtPlugin) ServeHTTP(rw http.ResponseWriter, request *http.Request) {
+	start := time.Now()
+	jwtPlugin.log("ServeHTTP received request")
+	token := request.Header.Get("Authorization")
+	token = strings.TrimSpace(token)
+	token = strings.Replace(token, "Bearer ", "", 1)
 	// if magic token mode is enable, which is for testing tools to bypass auth with a fake user
 	// then skip the auth check stage and forward on a mocked token
 	if jwtPlugin.enableMagicToken {
 		// check if magic token set
-		token := request.Header.Get("Authorization")
-		token = strings.TrimSpace(token)
-		token = strings.Replace(token, "Bearer ", "", 1)
 		if token == jwtPlugin.magicToken {
+			jwtPlugin.log("bearer token matched magic token. %s=%s", jwtPlugin.forwardAuthHeader, jwtPlugin.magicTokenForwardAuth)
 			// remove Authorization header from original request
 			request.Header.Del(jwtPlugin.forwardAuthErrorHeader)
-			request.Header.Set("Authorization", jwtPlugin.magicTokenForwardAuth)
-
+			request.Header.Set(jwtPlugin.forwardAuthHeader, jwtPlugin.magicTokenForwardAuth)
 			jwtPlugin.next.ServeHTTP(rw, request)
+			jwtPlugin.log("ServeHTTP took %s", time.Since(start).String())
 			return
 		}
 	}
 
 	if err := jwtPlugin.CheckToken(request); err != nil {
-		fmt.Println(err.Error())
+		jwtPlugin.log("ERR", err.Error())
 		jwtPlugin.ForwardError(rw, err.Error(), http.StatusUnauthorized, request)
+		jwtPlugin.log("ServeHTTP took %s", time.Since(start).String())
 		return
 	}
+	request.Header.Del(jwtPlugin.forwardAuthErrorHeader)
+	request.Header.Set(jwtPlugin.forwardAuthHeader, token)
+	jwtPlugin.log("bearer token matched magic token. %s=%s", jwtPlugin.forwardAuthHeader, jwtPlugin.magicTokenForwardAuth)
 	jwtPlugin.next.ServeHTTP(rw, request)
+	jwtPlugin.log("ServeHTTP took %s", time.Since(start).String())
 }
 
 func (jwtPlugin *JwtPlugin) CheckToken(request *http.Request) error {
@@ -544,6 +562,12 @@ func (jwtPlugin *JwtPlugin) CheckOpa(request *http.Request, token *JWT) error {
 		}
 	}
 	return nil
+}
+
+func (jwtPlugin *JwtPlugin) log(msg ...interface{}) {
+	if jwtPlugin.logging {
+		fmt.Println("JWT_PLUGIN:", msg)
+	}
 }
 
 func (jwtPlugin *JwtPlugin) ForwardError(rw http.ResponseWriter, msg string, statusCode int, origReq *http.Request) {
