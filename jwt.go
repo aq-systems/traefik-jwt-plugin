@@ -323,6 +323,8 @@ func (jwtPlugin *JwtPlugin) FetchKeys() {
 					}
 					jwtPlugin.keys[key.Kid] = kBytes
 				}
+			default:
+				jwtPlugin.log("unrecognized key %s in jwks", key.Kty)
 			}
 		}
 	}
