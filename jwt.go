@@ -568,8 +568,9 @@ func (jwtPlugin *JwtPlugin) CheckOpa(request *http.Request, token *JWT) error {
 }
 
 func (jwtPlugin *JwtPlugin) log(msg ...interface{}) {
-	//if jwtPlugin.logging {
-	fmt.Println("JWT_PLUGIN:", msg)
+	if jwtPlugin.logging {
+		fmt.Println(append([]interface{}{"jwt_plugin: "}, msg...))
+	}
 }
 
 func (jwtPlugin *JwtPlugin) ForwardError(rw http.ResponseWriter, msg string, statusCode int, origReq *http.Request) {
